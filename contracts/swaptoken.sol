@@ -1,67 +1,131 @@
-pragma solidity ^0.8.2;
-
 interface IERC20 {
-
-    function totalSupply() external view returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function transfer(address recipient, uint256 amount) external returns (bool);
-    function allowance(address owner, address spender) external view returns (uint256);
-    function approve(address spender, uint256 amount) external returns (bool);
-    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
+    function totalSupply() external view returns (uint);
+    function balanceOf(address account) external view returns (uint);
+    function transfer(address recipient, uint amount) external returns (bool);
+    function allowance(address owner, address spender) external view returns (uint);
+    function approve(address spender, uint amount) external returns (bool);
+    function transferFrom(
+        address sender,
+        address recipient,
+        uint amount
+    ) external returns (bool);
+    event Transfer(address indexed from, address indexed to, uint value);
+    event Approval(address indexed owner, address indexed spender, uint value);
 }
 
 
-contract TokenSwap {
+//import the uniswap router
+//the contract needs to use swapExactTokensForTokens
+//this will allow us to import swapExactTokensForTokens into our contract
+
+interface IUniswapV2Router {
+  function getAmountsOut(uint256 amountIn, address[] memory path)
+    external
+    view
+    returns (uint256[] memory amounts);
+  
+  function swapExactTokensForTokens(
+  
+    //amount of tokens we are sending in
+    uint256 amountIn,
+    //the minimum amount of tokens we want out of the trade
+    uint256 amountOutMin,
+    //list of token addresses we are going to trade in.  this is necessary to calculate amounts
+    address[] calldata path,
+    //this is the address we are going to send the output tokens to
+    address to,
+    //the last time that the trade is valid for
+    uint256 deadline
+  ) external returns (uint256[] memory amounts);
+}
+
+interface IUniswapV2Pair {
+  function token0() external view returns (address);
+  function token1() external view returns (address);
+  function swap(
+    uint256 amount0Out,
+    uint256 amount1Out,
+    address to,
+    bytes calldata data
+  ) external;
+}
+
+interface IUniswapV2Factory {
+  function getPair(address token0, address token1) external returns (address);
+}
+
+
+
+contract tokenSwap {
     
-    //create state variables
+    //address of the uniswap v2 router
+    address private constant UNISWAP_V2_ROUTER = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
     
-    IERC20 public token1;
-    IERC20 public token2;
-    address public owner1;
-    address public owner2;
+    //address of WETH token.  This is needed because some times it is better to trade through WETH.  
+    //you might get a better price using WETH.  
+    //example trading from token A to WETH then WETH to token B might result in a better price
+    address private constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     
-    //when deploying pass in owner 1 and owner 2
+
+    //this swap function is used to trade from one token to another
+    //the inputs are self explainatory
+    //token in = the token address you want to trade out of
+    //token out = the token address you want as the output of this trade
+    //amount in = the amount of tokens you are sending in
+    //amount out Min = the minimum amount of tokens you want out of the trade
+    //to = the address you want the tokens to be sent to
     
-    constructor(
-        address _token1,
-        address _owner1,
-        address _token2,
-        address _owner2
-        ) public {
-            token1 = IERC20(_token1);
-            owner1 = _owner1;
-            token2 = IERC20(_token2);
-            owner2 = _owner2;
+   function swap(address _tokenIn, address _tokenOut, uint256 _amountIn, uint256 _amountOutMin, address _to) external {
+      
+    //first we need to transfer the amount in tokens from the msg.sender to this contract
+    //this contract will have the amount of in tokens
+    IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn);
+    
+    //next we need to allow the uniswapv2 router to spend the token we just sent to this contract
+    //by calling IERC20 approve you allow the uniswap contract to spend the tokens in this contract 
+    IERC20(_tokenIn).approve(UNISWAP_V2_ROUTER, _amountIn);
+
+    //path is an array of addresses.
+    //this path array will have 3 addresses [tokenIn, WETH, tokenOut]
+    //the if statement below takes into account if token in or token out is WETH.  then the path is only 2 addresses
+    address[] memory path;
+    if (_tokenIn == WETH || _tokenOut == WETH) {
+      path = new address[](2);
+      path[0] = _tokenIn;
+      path[1] = _tokenOut;
+    } else {
+      path = new address[](3);
+      path[0] = _tokenIn;
+      path[1] = WETH;
+      path[2] = _tokenOut;
+    }
+        //then we will call swapExactTokensForTokens
+        //for the deadline we will pass in block.timestamp
+        //the deadline is the latest time the trade is valid for
+        IUniswapV2Router(UNISWAP_V2_ROUTER).swapExactTokensForTokens(_amountIn, _amountOutMin, path, _to, block.timestamp);
+    }
+    
+       //this function will return the minimum amount from a swap
+       //input the 3 parameters below and it will return the minimum amount out
+       //this is needed for the swap function above
+     function getAmountOutMin(address _tokenIn, address _tokenOut, uint256 _amountIn) external view returns (uint256) {
+
+       //path is an array of addresses.
+       //this path array will have 3 addresses [tokenIn, WETH, tokenOut]
+       //the if statement below takes into account if token in or token out is WETH.  then the path is only 2 addresses
+        address[] memory path;
+        if (_tokenIn == WETH || _tokenOut == WETH) {
+            path = new address[](2);
+            path[0] = _tokenIn;
+            path[1] = _tokenOut;
+        } else {
+            path = new address[](3);
+            path[0] = _tokenIn;
+            path[1] = WETH;
+            path[2] = _tokenOut;
         }
         
-        //this function will allow 2 people to trade 2 tokens as the same time (atomic) and swap them between accounts
-        //Bob holds token 1 and needs to send to alice
-        //Alice holds token 2 and needs to send to Bob
-        //this allows them to swap an amount of both tokens at the same time
-        
-        //*** Important ***
-        //this contract needs an allowance to send tokens at token 1 and token 2 that is owned by owner 1 and owner 2
-        
-        function swap( uint _amount1, uint _amount2) public {
-            require(msg.sender == owner1 || msg.sender == owner2, "Not authorized");
-            require(token1.allowance(owner1, address(this)) >= _amount1, "Token 1 allowance too low");
-            require(token2.allowance(owner1, address(this)) >= _amount1, "Token 2 allowance too low");
-            
-            //transfer TokenSwap
-            //token1, owner1, amount 1 -> owner2.  needs to be in same order as function
-            _safeTransferFrom(token1, owner1, owner2, _amount1);
-            //token2, owner2, amount 2 -> owner1.  needs to be in same order as function
-            _safeTransferFrom(token2, owner2, owner1, _amount2);
-            
-            
-        }
-        //This is a private function that the function above is going to call
-        //the result of this transaction(bool) is assigned in a variable called sent
-        //then we require the transfer to be successful
-        function _safeTransferFrom(IERC20 token, address sender, address recipient, uint amount) private {bool sent = token.transferFrom(sender, recipient, amount);
-            require(sent, "Token transfer failed");
-            
-        }
+        uint256[] memory amountOutMins = IUniswapV2Router(UNISWAP_V2_ROUTER).getAmountsOut(_amountIn, path);
+        return amountOutMins[path.length -1];  
+    }  
 }
